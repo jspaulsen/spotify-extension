@@ -1,0 +1,628 @@
+[extension_name]
+Spotify Extension
+[extension_info]
+Spotify Extension for SAMMI
+[extension_version]
+1.0.0
+[insert_external]
+<!-- HTML interface for the extension -->
+<div>
+    <h1>Spotify Extension</h1>
+    <p>Control Spotify from SAMMI</p>
+</div>
+
+
+[insert_command]
+SAMMI.extCommand(
+    'Spotify Refresh Token', 
+    3355443, 
+    52,
+    {},
+    // optional argument: sendAsExtensionTrigger = true
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Set Refresh Token',
+    3355443,
+    52,
+    {
+        refresh_token: ['Refresh Token', 14, '']
+    },
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Skip Song',
+    3355443,
+    52,
+    {},
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Pause Song',
+    3355443,
+    52,
+    {},
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Resume Song',
+    3355443,
+    52,
+    {},
+    sendAsExtensionTrigger = false,
+    false
+);
+
+// Spotify Next Song, vaariable that returns song name
+SAMMI.extCommand(
+    'Spotify Next Song',
+    3355443,
+    52,
+    {
+        trackInfo: ['Save in Variable', 14, '']
+    },
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Current Song',
+    3355443,
+    52,
+    {
+        trackInfo: ['Save in Variable', 14, '']
+    },
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Lookup Song',
+    3355443,
+    52,
+    {
+        query: ['Song Lookup Query', 14, 'November Rain by Guns N Roses'],
+        trackInfo: ['Save in Variable', 14, '']
+    },
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Add Song',
+    3355443,
+    52,
+    {
+        query: ['Song', 14, ''],
+        trackInfo: ['Save in Variable', 14, '']
+    },
+    sendAsExtensionTrigger = false,
+    false
+);
+
+// Call the main function when the extension loads
+(async () => {
+    await main();
+})();
+
+
+[insert_script]
+function trackToSammiTrack(track) {
+    return {
+        name: track.name,
+        artist: track.artists.map(artist => artist.name).join(', '),
+        album: track.album.name,
+        image: track.album.images[0].url,
+        uri: track.uri,
+        href: track.href,
+    };
+}
+
+async function loadSpotifyToken() {
+    const refresh_token = await SAMMI.loadIni(
+        'spotify.ini',
+        'credentials',
+        'refresh_token',
+    );
+
+    if (!refresh_token) {
+        SAMMI.alert('No refresh token found');
+        console.error('No refresh token found');
+        return;
+    }
+
+    return refresh_token.Value;
+}
+
+async function saveSpotifyToken(refresh_token) {
+    await SAMMI.saveIni(
+        'spotify.ini',
+        'credentials',
+        'refresh_token',
+        refresh_token,
+    );
+}
+
+
+async function refreshSpotifyToken(refreshToken) {
+    const url = "https://accounts.spotify.com/api/token";
+    const SPOTIFY_CLIENT_ID = 'c47877614f4e4632b293a40fe7a260e2';
+
+    console.log('refreshing token', refreshToken)
+    const payload = {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: SPOTIFY_CLIENT_ID,
+        }),
+    };
+
+    const response = await fetch(url, payload);
+    return await response.json();
+}
+
+async function skipSong(access_token) {
+    const url = "https://api.spotify.com/v1/me/player/next";
+    const headers = {
+        "Authorization": `Bearer ${access_token}`,
+    };
+
+    const payload = {
+        method: 'POST',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+
+    // if the status_code is 401, refresh the token and try again
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+
+        return await skipSong(newAccessToken);
+    }
+
+    return response;
+}
+
+
+async function pauseSong(access_token) {
+    const url = "https://api.spotify.com/v1/me/player/pause";
+    const headers = {
+        "Authorization": `Bearer ${access_token}`,
+    };
+
+    const payload = {
+        method: 'PUT',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+
+    // if the status_code is 401, refresh the token and try again
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+
+        return await pauseSong(newAccessToken);
+    }
+
+    return response;
+}
+
+async function getNextSong(access_token) {
+    const url = "https://api.spotify.com/v1/me/player/queue";
+    const headers = {
+        "Authorization": `Bearer ${access_token}`,
+    };
+
+    const payload = {
+        method: 'GET',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+
+    // if the status_code is 401, refresh the token and try again
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+
+        return await getNextSong(newAccessToken);
+    }
+
+    const body = await response.json();
+    const queue = body.queue;
+
+    console.log('Queue', queue);
+
+    if (queue.length === 0) {
+        return null;
+    }
+
+    return queue[0];
+}
+
+async function getCurrentSong(access_token) {
+    const url = "https://api.spotify.com/v1/me/player/currently-playing";
+    const headers = {
+        "Authorization": `Bearer ${access_token}`,
+    };
+
+    const payload = {
+        method: 'GET',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+
+    // if the status_code is 401, refresh the token and try again
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+
+        return await getCurrentSong(newAccessToken);
+    }
+
+    const body = await response.json();
+    return body.item;
+}
+
+
+async function lookupSong(accessToken, query) {
+    const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+    };
+
+    const query_params = {
+        'q': query,
+        'type': 'track,artist,album',
+    };
+
+    const url = "https://api.spotify.com/v1/search" + '?' + new URLSearchParams(query_params);
+    const payload = {
+        method: 'GET',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+
+    // if the status_code is 401, refresh the token and try again
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+
+        return await lookupSong(newAccessToken, query);
+    }
+
+    const body = await response.json();
+    return body;
+}
+
+async function addSong(accessToken, uri) {
+    const url = "https://api.spotify.com/v1/me/player/queue?uri=" + uri;
+    const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+    };
+
+    console.log('Add Song', uri);
+
+    const payload = {
+        method: 'POST',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+
+    // if the status_code is 401, refresh the token and try again
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+
+        return await addSong(newAccessToken, query);
+    }
+
+    return response;
+}
+
+async function resumeSong(accessToken) {
+    const url = "https://api.spotify.com/v1/me/player/play";
+    const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+    };
+
+    const payload = {
+        method: 'PUT',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+
+    // if the status_code is 401, refresh the token and try again
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+
+        return await resumeSong(newAccessToken);
+    }
+
+    return response;
+}
+
+
+async function getTrackInfo(accessToken, trackId) {
+    const url = `https://api.spotify.com/v1/tracks/${trackId}`;
+    const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+    };
+
+    const payload = {
+        method: 'GET',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+    return await response.json();
+}
+
+async function refreshTokenIntegration() {
+    const refreshToken = await loadSpotifyToken();
+    
+    if (!refreshToken) {
+        console.error('No refresh token found');
+        return;
+    }
+
+    const response = await refreshSpotifyToken(refreshToken);
+
+    console.log(response);
+
+    if (response.error) {
+        SAMMI.popUp(`Error refreshing token: ${response.error} - ${response.error_description}. Please re-authenticate with Spotify.`);
+        console.error('Error refreshing token', response.error, response.error_description);
+        return;
+    }
+
+    console.log('storing refresh token', response.refresh_token || refreshToken);
+    console.log('Refreshed Spotify token', response);
+
+    await SAMMI.setVariable('SPOTIFY_ACCESS_TOKEN', response.access_token);
+    await saveSpotifyToken(response.refresh_token || refreshToken);
+
+    return response.access_token;
+}
+
+async function onSetRefreshToken(payload) {
+    await saveSpotifyToken(payload.Data.refresh_token);
+    await refreshTokenIntegration();
+}
+
+// integration methods
+async function onSkipSong(accessToken, payload) {
+    await skipSong(accessToken);
+}
+
+async function onRefreshToken(accessToken, payload) {
+    await refreshTokenIntegration();
+}
+
+async function onPauseSong(accessToken, payload) {
+    await pauseSong(accessToken);
+}
+
+async function onLookupSong(accessToken, payload) {
+    const response = await lookupSong(accessToken, payload.Data.query);
+    const tracks = response.tracks.items;
+
+    if (!tracks) {
+        await SAMMI.setVariable(
+            payload.Data.trackInfo, 
+            0,
+            payload.Data.FromButton,
+            payload.Data.instanceId
+        );
+
+        return;
+    }
+
+    await SAMMI.setVariable(
+        payload.Data.trackInfo, 
+        trackToSammiTrack(tracks[0]),
+        payload.Data.FromButton,
+        payload.Data.instanceId
+    );
+}
+
+async function onAddSong(accessToken, payload) { // todo: this changes
+    const query = payload.Data.query;
+    let track = null;
+
+    // if the query is a URL
+    if (query.startsWith('https') && query.includes('track')) {
+        const url = new URL(query);
+        
+        if (url.hostname === 'open.spotify.com') {
+            const path = url.pathname.split('/');
+
+            uri = `spotify:track:${path[path.length - 1]}`;
+            track = await getTrackInfo(accessToken, uri);
+        }
+    }
+
+    if (!track) {
+        const response = await lookupSong(accessToken, query);
+        const tracks = response.tracks.items;
+
+        if (!tracks) {
+            await SAMMI.setVariable(
+                payload.Data.trackInfo, 
+                0,
+                payload.Data.FromButton,
+                payload.Data.instanceId
+            );
+
+            return;
+        }
+
+        track = tracks[0];
+    }
+
+    const response = await addSong(accessToken, track.uri);
+    const variable = response.status === 204 ? trackToSammiTrack(track) : 0;
+
+    await SAMMI.setVariable(
+        payload.Data.trackInfo, 
+        variable,
+        payload.Data.FromButton,
+        payload.Data.instanceId
+    );
+}
+
+async function onNextSong(accessToken, payload) {
+    const track = await getNextSong(accessToken);
+
+    if (!track) {
+        await SAMMI.setVariable(
+            payload.Data.trackInfo, 
+            0,
+            payload.Data.FromButton,
+            payload.Data.instanceId
+        );
+
+        return;
+    }
+
+    await SAMMI.setVariable(
+        payload.Data.trackInfo, 
+        trackToSammiTrack(track),
+        payload.Data.FromButton,
+        payload.Data.instanceId
+    );
+}
+
+async function onResumeSong(accessToken, payload) {
+    await resumeSong(accessToken);
+}
+
+async function onCurrentSong(accessToken, payload) {
+    const track = await getCurrentSong(accessToken);
+
+    if (!track) {
+        await SAMMI.setVariable(
+            payload.Data.trackInfo, 
+            0,
+            payload.Data.FromButton,
+            payload.Data.instanceId
+        );
+
+        return;
+    }
+
+    await SAMMI.setVariable(
+        payload.Data.trackInfo, 
+        trackToSammiTrack(track),
+        payload.Data.FromButton,
+        payload.Data.instanceId
+    );
+}
+
+async function onEvent(event, payload) {
+    const integrationMapping = {
+        'Spotify Skip Song': onSkipSong,
+        'Spotify Refresh Token': onRefreshToken,
+        'Spotify Set Refresh Token': onSetRefreshToken,
+        'Spotify Pause Song': onPauseSong,
+        'Spotify Resume Song': onResumeSong,
+        'Spotify Lookup Song': onLookupSong,
+        'Spotify Add Song': onAddSong,
+        'Spotify Next Song': onNextSong,
+        'Spotify Current Song': onCurrentSong,
+    };
+
+    const accessTokenPayload = await SAMMI.getVariable('SPOTIFY_ACCESS_TOKEN');
+    let accessToken = accessTokenPayload.Value;
+
+    if (!accessToken) {
+        const accessToken = await refreshTokenIntegration();
+
+        if (!accessToken) {
+            SAMMI.popUp('No spotify access token found; this extension will not work without it. Please re-authenticate with Spotify.');
+            console.error('No access token found');
+            return;
+        }
+    }
+
+    const fn = integrationMapping[event];
+
+    if (!fn) {
+        SAMMI.alert(`No integration method found for event: ${event}`);
+        console.error(`No integration method found for event: ${event}`);
+        return;
+    }
+
+    return await fn(accessToken, payload);
+}
+
+
+// Custom JavaScript for the extension
+// Main function to run when SAMMI connects to the Bridge
+async function main() {
+    sammiclient.on('Spotify Skip Song', async (payload) => await onEvent('Spotify Skip Song', payload));
+    sammiclient.on('Spotify Refresh Token', async (payload) => await onEvent('Spotify Refresh Token', payload));
+    sammiclient.on('Spotify Skip Song', async (payload) => await onEvent('Spotify Skip Song', payload));
+    sammiclient.on('Spotify Pause Song', async (payload) => await onEvent('Spotify Pause Song', payload));
+    sammiclient.on('Spotify Resume Song', async (payload) => await onEvent('Spotify Resume Song', payload));
+    sammiclient.on('Spotify Next Song', async (payload) => await onEvent('Spotify Next Song', payload));
+    sammiclient.on('Spotify Current Song', async (payload) => await onEvent('Spotify Current Song', payload));
+    sammiclient.on('Spotify Lookup Song', async (payload) => await onEvent('Spotify Lookup Song', payload));
+    sammiclient.on('Spotify Add Song', async (payload) => await onEvent('Spotify Add Song', payload));
+    sammiclient.on('Spotify Set Refresh Token', async (payload) => await onEvent('Spotify Set Refresh Token', payload));
+
+    await refreshTokenIntegration();
+
+    // Set a loaded flag to true
+    console.log(`Spotify Extension Loaded`)
+    SAMMI.setVariable('SPOTIFY_EXTENSION_LOADED', "true");
+}
+
+// [insert_hook]
+
+// In this next section below, copy and paste your deck from SAMMI Core (right click on Deck Thumbnail -> Copy Deck)
+// At the end, you can add more parameters and conditions under which the extension will install
+// Notice we added this particular key to the very end of the deck json: "sammi_version": "2023.3.0" 
+// This means the extension will only install if SAMMI version is 2023.3.0 or higher
+[insert_over]
+{ "deck_data": "{ \"background_color\": 4210752.0, \"on\": true, \"grid_y\": 10.0, \"snap_grid\": 1.0, \"lb_version\": \"2024.1.0\", \"background_image\": \"\", \"sammi_version\": \"2024.1.0\", \"encrypted\": false, \"adaptive_resizing\": 1.0, \"unique_id\": \"20240317151952373525382\", \"button_list\": [ { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Setup\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Sammi will now open a window to authorize a Spotify application which allows this extension to control Spotify. It (may) report as dangerous, it's not.\", \"v0\": 1.0 }, { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/api.yeebs.dev\\\/oauth\\\/spotify\\\/extension\\\/redirect\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Input Refresh token from browser.\", \"b2\": \"refresh_token\" }, { \"b1\": \"=\", \"cmd\": 15.0, \"obsid\": \"Main\", \"pos\": 3.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"global.SPOTIFY_REFRESH_TOKEN\", \"b2\": \"refresh_token\" }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 4.0, \"vis\": 1.0, \"refresh_token\": \"refresh_token\", \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Refresh Token\", \"ext\": \"SAMMI Bridge\" }, { \"b1\": \"credentials\", \"b3\": \"\\\/$global.SPOTIFY_REFRESH_TOKEN$\\\/\", \"cmd\": 126.0, \"obsid\": \"Main\", \"pos\": 5.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 1.0, \"xpan\": 0.0, \"b0\": \"spotify.ini\", \"b2\": \"refresh_token\" } ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 1.0, \"button_id\": \"SPOTIFY_SETUP\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 } ], \"deck_name\": \"Spotify Extension\", \"grid_x\": 10.0, \"stretch\": 0.0 }", "unique_id": "20240317151952373525382", "include_image": { } }
