@@ -400,9 +400,16 @@ async function getTrackInfo(accessToken, trackId) {
 
 async function refreshTokenIntegration() {
     const refreshToken = await loadSpotifyToken();
-    
+    const STATUS_BUTTON_ID = 'SPOTIFY_EXTENSION_STATUS';
+
     if (!refreshToken) {
         console.error('No refresh token found');
+        await SAMMI.modifyButton(
+            STATUS_BUTTON_ID, 
+            16711680,
+            'No refresh token found'
+        );
+
         return;
     }
 
@@ -413,6 +420,12 @@ async function refreshTokenIntegration() {
     if (response.error) {
         SAMMI.popUp(`Error refreshing token: ${response.error} - ${response.error_description}. Please re-authenticate with Spotify.`);
         console.error('Error refreshing token', response.error, response.error_description);
+        await SAMMI.modifyButton(
+            STATUS_BUTTON_ID, 
+            16711680,
+            'Error refreshing token'
+        );
+
         return;
     }
 
@@ -421,6 +434,13 @@ async function refreshTokenIntegration() {
 
     await SAMMI.setVariable('SPOTIFY_ACCESS_TOKEN', response.access_token);
     await saveSpotifyToken(response.refresh_token || refreshToken);
+
+    // success
+    await SAMMI.modifyButton(
+        STATUS_BUTTON_ID, 
+        65280,
+        'Ok',
+    );
 
     return response.access_token;
 }
@@ -625,4 +645,4 @@ async function main() {
 // Notice we added this particular key to the very end of the deck json: "sammi_version": "2023.3.0" 
 // This means the extension will only install if SAMMI version is 2023.3.0 or higher
 [insert_over]
-{ "deck_data": "{ \"background_color\": 4210752.0, \"on\": true, \"grid_y\": 10.0, \"snap_grid\": 1.0, \"lb_version\": \"2024.1.0\", \"background_image\": \"\", \"sammi_version\": \"2024.1.0\", \"encrypted\": false, \"adaptive_resizing\": 1.0, \"unique_id\": \"20240317151952373525382\", \"button_list\": [ { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Setup\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Sammi will now open a window to authorize a Spotify application which allows this extension to control Spotify. It (may) report as dangerous, it's not.\", \"v0\": 1.0 }, { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/api.yeebs.dev\\\/oauth\\\/spotify\\\/extension\\\/redirect\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Input Refresh token from browser.\", \"b2\": \"refresh_token\" }, { \"b1\": \"=\", \"cmd\": 15.0, \"obsid\": \"Main\", \"pos\": 3.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"global.SPOTIFY_REFRESH_TOKEN\", \"b2\": \"refresh_token\" }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 4.0, \"vis\": 1.0, \"refresh_token\": \"refresh_token\", \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Refresh Token\", \"ext\": \"SAMMI Bridge\" }, { \"b1\": \"credentials\", \"b3\": \"\\\/$global.SPOTIFY_REFRESH_TOKEN$\\\/\", \"cmd\": 126.0, \"obsid\": \"Main\", \"pos\": 5.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 1.0, \"xpan\": 0.0, \"b0\": \"spotify.ini\", \"b2\": \"refresh_token\" } ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 1.0, \"button_id\": \"SPOTIFY_SETUP\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 } ], \"deck_name\": \"Spotify Extension\", \"grid_x\": 10.0, \"stretch\": 0.0 }", "unique_id": "20240317151952373525382", "include_image": { } }
+{ "deck_data": "{ \"background_color\": 4210752.0, \"on\": true, \"grid_y\": 10.0, \"snap_grid\": 1.0, \"lb_version\": \"2024.1.0\", \"background_image\": \"\", \"sammi_version\": \"2024.1.0\", \"encrypted\": 0.0, \"adaptive_resizing\": 1.0, \"unique_id\": \"20240317151952373525382\", \"button_list\": [ { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Setup\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Sammi will now open a window to authorize a Spotify application which allows this extension to control Spotify.\", \"v0\": 1.0 }, { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/spotify-token-api-gold.vercel.app\\\/oauth\\\/spotify\\\/extension\\\/redirect\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Input Refresh token from browser.\", \"b2\": \"refresh_token\" }, { \"b1\": \"=\", \"cmd\": 15.0, \"obsid\": \"Main\", \"pos\": 3.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"global.SPOTIFY_REFRESH_TOKEN\", \"b2\": \"refresh_token\" }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 4.0, \"vis\": 1.0, \"refresh_token\": \"refresh_token\", \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Refresh Token\", \"ext\": \"SAMMI Bridge\" }, { \"b1\": \"credentials\", \"b3\": \"\\\/$global.SPOTIFY_REFRESH_TOKEN$\\\/\", \"cmd\": 126.0, \"obsid\": \"Main\", \"pos\": 5.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 1.0, \"xpan\": 0.0, \"b0\": \"spotify.ini\", \"b2\": \"refresh_token\" } ], \"press_type\": 0.0, \"x\": 0.59999999999999997779553950749687, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.40000000000000002220446049250313, \"button_id\": \"SPOTIFY_SETUP\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": true, \"text\": \"Unknown\", \"release_duration\": 0.0, \"queueable\": false, \"command_list\": [ ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": false, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": false, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_EXTENSION_STATUS\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 64.0, \"stretch\": false } ], \"deck_name\": \"Spotify Extension\", \"grid_x\": 10.0, \"stretch\": 0.0 }", "unique_id": "20240317151952373525382", "include_image": { } }
