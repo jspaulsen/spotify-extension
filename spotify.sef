@@ -343,7 +343,7 @@ async function addSong(accessToken, uri) {
             return;
         }
 
-        return await addSong(newAccessToken, query);
+        return await addSong(newAccessToken, uri);
     }
 
     return response;
