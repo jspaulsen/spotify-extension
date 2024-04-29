@@ -108,6 +108,18 @@ SAMMI.extCommand(
     false
 );
 
+SAMMI.extCommand(
+    'Spotify Set Volume',
+    3355443,
+    52,
+    {
+        volume: ['Volume', 14, '100']
+    },
+    sendAsExtensionTrigger = false,
+    false
+);
+
+
 // Call the main function when the extension loads
 (async () => {
     await main();
@@ -392,6 +404,34 @@ async function getTrackInfo(accessToken, trackId) {
     return await response.json();
 }
 
+
+async function setPlayerVolume(accessToken, volume) {
+    const url = `https://api.spotify.com/v1/me/player/volume?volume_percent=${volume}`;
+    const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+    };
+
+    const payload = {
+        method: 'PUT',
+        headers: headers,
+    };
+
+    const response = await fetch(url, payload);
+
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+        
+        return await setPlayerVolume(newAccessToken, volume);
+    }
+
+    return;
+}
+
+
 async function refreshTokenIntegration(newlyRefreshedToken = null) {
     const refreshToken = newlyRefreshedToken || await loadSpotifyToken()
     const STATUS_BUTTON_ID = 'SPOTIFY_EXTENSION_STATUS';
@@ -568,6 +608,17 @@ async function onCurrentSong(accessToken, payload) {
     );
 }
 
+async function onSetVolume(accessToken, payload) {
+    const volume = payload.Data.volume;
+
+    // if it's not an integer, convert it to an integer
+    if (!Number.isInteger(volume)) {
+        payload.Data.volume = parseInt(volume);
+    }
+
+    await setPlayerVolume(accessToken, payload.Data.volume);
+}
+
 async function onEvent(event, payload) {
     const integrationMapping = {
         'Spotify Skip Song': onSkipSong,
@@ -579,6 +630,7 @@ async function onEvent(event, payload) {
         'Spotify Add Song': onAddSong,
         'Spotify Next Song': onNextSong,
         'Spotify Current Song': onCurrentSong,
+        'Spotify Set Volume': onSetVolume,
     };
 
     const accessTokenPayload = await SAMMI.getVariable('SPOTIFY_ACCESS_TOKEN');
@@ -620,6 +672,7 @@ async function main() {
     sammiclient.on('Spotify Lookup Song', async (payload) => await onEvent('Spotify Lookup Song', payload));
     sammiclient.on('Spotify Add Song', async (payload) => await onEvent('Spotify Add Song', payload));
     sammiclient.on('Spotify Set Refresh Token', async (payload) => await onEvent('Spotify Set Refresh Token', payload));
+    sammiclient.on('Spotify Set Volume', async (payload) => await onEvent('Spotify Set Volume', payload));
 
     await refreshTokenIntegration();
 
