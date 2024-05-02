@@ -481,7 +481,12 @@ async function refreshTokenIntegration(newlyRefreshedToken = null) {
 }
 
 async function onSetRefreshToken(_, payload) {
-    await refreshTokenIntegration(payload.Data.refresh_token);
+    await refreshTokenIntegration(
+        payload
+            .Data
+            .refresh_token
+            .trim()
+    )
 }
 
 // integration methods
