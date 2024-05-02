@@ -8,6 +8,8 @@ Spotify Extension for SAMMI
 <!-- HTML interface for the extension -->
 <div>
     <h1>Spotify Extension</h1>
+    <p>Authored by: <a href="https://www.github.com/jspaulsen">jspaulsen</a></p>
+    <p>Source Code: <a href="https://github.com/jspaulsen/spotify-extension">GitHub</a></p>
     <p>Control Spotify from SAMMI</p>
 </div>
 
@@ -145,7 +147,7 @@ async function loadSpotifyToken() {
         'refresh_token',
     );
 
-    if (!refresh_token) {
+    if (!refresh_token || refresh_token.Value === '') {
         SAMMI.alert('No refresh token found');
         console.error('No refresh token found');
         return;
@@ -437,6 +439,7 @@ async function refreshTokenIntegration(newlyRefreshedToken = null) {
     const STATUS_BUTTON_ID = 'SPOTIFY_EXTENSION_STATUS';
 
     if (!refreshToken) {
+        SAMMI.popUp(`No refresh token found. Please authenticate with Spotify.`);
         console.error('No refresh token found');
         await SAMMI.modifyButton(
             STATUS_BUTTON_ID, 
@@ -450,14 +453,17 @@ async function refreshTokenIntegration(newlyRefreshedToken = null) {
     const response = await refreshSpotifyToken(refreshToken);
 
     if (response.error) {
-        SAMMI.popUp(`Error refreshing token: ${response.error} - ${response.error_description}. Please re-authenticate with Spotify.`);
         console.error('Error refreshing token', response.error, response.error_description);
+
+        SAMMI.popUp(`Error refreshing token: ${response.error} - ${response.error_description}. Please re-authenticate with Spotify.`);
         await SAMMI.modifyButton(
             STATUS_BUTTON_ID, 
             16711680,
             'Error refreshing token'
         );
-
+        
+        // unset the refresh token in the file
+        await saveSpotifyToken('');
         return;
     }
 
@@ -475,7 +481,6 @@ async function refreshTokenIntegration(newlyRefreshedToken = null) {
 }
 
 async function onSetRefreshToken(_, payload) {
-    await saveSpotifyToken(payload.Data.refresh_token);
     await refreshTokenIntegration(payload.Data.refresh_token);
 }
 
