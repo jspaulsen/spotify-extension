@@ -3,7 +3,7 @@ Spotify Extension
 [extension_info]
 Spotify Extension for SAMMI which allows you to control Spotify from SAMMI
 [extension_version]
-2.0.0-dev.1
+2.0.0
 [insert_external]
 <!-- HTML interface for the extension -->
 <div>
@@ -86,7 +86,7 @@ SAMMI.extCommand(
 
 // Spotify Next Song, vaariable that returns song name
 SAMMI.extCommand(
-    'Spotify Next Song',
+    'Spotify Get Queue',
     3355443,
     52,
     {
@@ -150,13 +150,38 @@ SAMMI.extCommand(
 
 
 [insert_script]
+// const response = await fetch(url, payload);
+
+async function fetchR(url, payload) {
+    const response = await fetch(url, payload);
+
+    if (response.status === 401) {
+        const newAccessToken = await refreshTokenIntegration();
+
+        if (!newAccessToken) {
+            return;
+        }
+
+        return await _fetch(url, payload);
+    }
+
+    return response;
+}
+
 
 function trackToSammiTrack(track) {
+    const images = {
+        small: track.album.images[0].url,
+        medium: track.album.images[1].url,
+        large: track.album.images[2].url,
+    };
+
     return {
         name: track.name,
         artist: track.artists.map(artist => artist.name).join(', '),
         album: track.album.name,
         image: track.album.images[0].url,
+        images,
         uri: track.uri,
         href: track.href,
     };
@@ -217,10 +242,7 @@ async function refreshSpotifyToken(refreshToken) {
     if (!spotifyClientId) {
         SAMMI.popUp('No Spotify Client ID found - did you run the setup command?');
         console.error('No Spotify Client ID found');
-
-        // TODO: This will change as we migrate; for now, set the value to our client ID
-        spotifyClientId = 'c47877614f4e4632b293a40fe7a260e2';
-        // return;
+        return;
     }
 
     const payload = {
@@ -250,22 +272,8 @@ async function skipSong(access_token) {
         headers: headers,
     };
 
-    const response = await fetch(url, payload);
-
-    // if the status_code is 401, refresh the token and try again
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        if (!newAccessToken) {
-            return;
-        }
-
-        return await skipSong(newAccessToken);
-    }
-
-    return response;
+    return await fetchR(url, payload);
 }
-
 
 async function pauseSong(access_token) {
     const url = "https://api.spotify.com/v1/me/player/pause";
@@ -278,23 +286,10 @@ async function pauseSong(access_token) {
         headers: headers,
     };
 
-    const response = await fetch(url, payload);
-
-    // if the status_code is 401, refresh the token and try again
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        if (!newAccessToken) {
-            return;
-        }
-
-        return await pauseSong(newAccessToken);
-    }
-
-    return response;
+    return await fetchR(url, payload);
 }
 
-async function getNextSong(access_token) {
+async function getQueue(access_token) { // returns an array of tracks
     const url = "https://api.spotify.com/v1/me/player/queue";
     const headers = {
         "Authorization": `Bearer ${access_token}`,
@@ -305,17 +300,11 @@ async function getNextSong(access_token) {
         headers: headers,
     };
 
-    const response = await fetch(url, payload);
+    const response = await fetchR(url, payload);
 
-    // if the status_code is 401, refresh the token and try again
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        if (!newAccessToken) {
-            return;
-        }
-
-        return await getNextSong(newAccessToken);
+    // if the status_code is not 2xx, return null
+    if (response.status >= 300) {
+        return null;
     }
 
     const body = await response.json();
@@ -325,7 +314,7 @@ async function getNextSong(access_token) {
         return null;
     }
 
-    return queue[0];
+    return queue;
 }
 
 async function getCurrentSong(access_token) {
@@ -339,17 +328,11 @@ async function getCurrentSong(access_token) {
         headers: headers,
     };
 
-    const response = await fetch(url, payload);
+    const response = await fetchR(url, payload);
 
-    // if the status_code is 401, refresh the token and try again
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        if (!newAccessToken) {
-            return;
-        }
-
-        return await getCurrentSong(newAccessToken);
+    // if the status_code is not 2xx, return null
+    if (response.status >= 300) {
+        return null;
     }
 
     const body = await response.json();
@@ -374,15 +357,9 @@ async function lookupSong(accessToken, query) {
 
     const response = await fetch(url, payload);
 
-    // if the status_code is 401, refresh the token and try again
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        if (!newAccessToken) {
-            return;
-        }
-
-        return await lookupSong(newAccessToken, query);
+    // if the status_code is not 2xx, return null
+    if (response.status >= 300) {
+        return null;
     }
 
     const body = await response.json();
@@ -400,20 +377,7 @@ async function addSong(accessToken, uri) {
         headers: headers,
     };
 
-    const response = await fetch(url, payload);
-
-    // if the status_code is 401, refresh the token and try again
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        if (!newAccessToken) {
-            return;
-        }
-
-        return await addSong(newAccessToken, uri);
-    }
-
-    return response;
+    return await fetchR(url, payload);
 }
 
 async function resumeSong(accessToken) {
@@ -427,20 +391,7 @@ async function resumeSong(accessToken) {
         headers: headers,
     };
 
-    const response = await fetch(url, payload);
-
-    // if the status_code is 401, refresh the token and try again
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        if (!newAccessToken) {
-            return;
-        }
-
-        return await resumeSong(newAccessToken);
-    }
-
-    return response;
+    return await fetchR(url, payload);
 }
 
 
@@ -454,11 +405,10 @@ async function getTrackInfo(accessToken, trackId) {
         method: 'GET',
         headers: headers,
     };
-
-    const response = await fetch(url, payload);
+    
+    const response = await fetchR(url, payload);
     return await response.json();
 }
-
 
 async function setPlayerVolume(accessToken, volume) {
     const url = `https://api.spotify.com/v1/me/player/volume?volume_percent=${volume}`;
@@ -471,21 +421,8 @@ async function setPlayerVolume(accessToken, volume) {
         headers: headers,
     };
 
-    const response = await fetch(url, payload);
-
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        if (!newAccessToken) {
-            return;
-        }
-        
-        return await setPlayerVolume(newAccessToken, volume);
-    }
-
-    return;
+    return await fetchR(url, payload);
 }
-
 
 async function refreshTokenIntegration(newlyRefreshedToken = null) {
     const refreshToken = newlyRefreshedToken || await loadSpotifyToken()
@@ -569,7 +506,7 @@ async function onLookupSong(accessToken, payload) {
 
         return;
     }
-
+    
     await SAMMI.setVariable(
         payload.Data.trackInfo, 
         trackToSammiTrack(tracks[0]),
@@ -623,10 +560,12 @@ async function onAddSong(accessToken, payload) { // todo: this changes
     );
 }
 
-async function onNextSong(accessToken, payload) {
-    const track = await getNextSong(accessToken);
+// 
+async function onGetQueue(accessToken, payload) {
+    const queue = await getQueue(accessToken);
 
-    if (!track) {
+    console.log(queue);
+    if (!queue || queue.length === 0) {
         await SAMMI.setVariable(
             payload.Data.trackInfo, 
             0,
@@ -639,7 +578,7 @@ async function onNextSong(accessToken, payload) {
 
     await SAMMI.setVariable(
         payload.Data.trackInfo, 
-        trackToSammiTrack(track),
+        queue.map(trackToSammiTrack),
         payload.Data.FromButton,
         payload.Data.instanceId
     );
@@ -722,7 +661,7 @@ async function onEvent(event, payload) {
         'Spotify Resume Song': onResumeSong,
         'Spotify Lookup Song': onLookupSong,
         'Spotify Add Song': onAddSong,
-        'Spotify Next Song': onNextSong,
+        'Spotify Get Queue': onGetQueue,
         'Spotify Current Song': onCurrentSong,
         'Spotify Set Volume': onSetVolume,
         'Spotify Set Client ID': onSetClientId,
@@ -763,7 +702,7 @@ async function main() {
         'Spotify Refresh Token',
         'Spotify Pause Song',
         'Spotify Resume Song',
-        'Spotify Next Song',
+        'Spotify Get Queue',
         'Spotify Current Song',
         'Spotify Lookup Song',
         'Spotify Add Song',
@@ -777,17 +716,6 @@ async function main() {
     for (const command of commands) {
         sammiclient.on(command, async (payload) => await onEvent(command, payload));
     }
-
-    // sammiclient.on('Spotify Skip Song', async (payload) => await onEvent('Spotify Skip Song', payload));
-    // sammiclient.on('Spotify Refresh Token', async (payload) => await onEvent('Spotify Refresh Token', payload));
-    // sammiclient.on('Spotify Pause Song', async (payload) => await onEvent('Spotify Pause Song', payload));
-    // sammiclient.on('Spotify Resume Song', async (payload) => await onEvent('Spotify Resume Song', payload));
-    // sammiclient.on('Spotify Next Song', async (payload) => await onEvent('Spotify Next Song', payload));
-    // sammiclient.on('Spotify Current Song', async (payload) => await onEvent('Spotify Current Song', payload));
-    // sammiclient.on('Spotify Lookup Song', async (payload) => await onEvent('Spotify Lookup Song', payload));
-    // sammiclient.on('Spotify Add Song', async (payload) => await onEvent('Spotify Add Song', payload));
-    // sammiclient.on('Spotify Set Refresh Token', async (payload) => await onEvent('Spotify Set Refresh Token', payload));
-    // sammiclient.on('Spotify Set Volume', async (payload) => await onEvent('Spotify Set Volume', payload));
 
     await refreshTokenIntegration();
 
