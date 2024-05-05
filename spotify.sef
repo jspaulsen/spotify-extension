@@ -1,9 +1,9 @@
 [extension_name]
 Spotify Extension
 [extension_info]
-Spotify Extension for SAMMI
+Spotify Extension for SAMMI which allows you to control Spotify from SAMMI
 [extension_version]
-1.0.0
+2.0.0-dev.1
 [insert_external]
 <!-- HTML interface for the extension -->
 <div>
@@ -20,7 +20,6 @@ SAMMI.extCommand(
     3355443, 
     52,
     {},
-    // optional argument: sendAsExtensionTrigger = true
     sendAsExtensionTrigger = false,
     false
 );
@@ -31,6 +30,28 @@ SAMMI.extCommand(
     52,
     {
         refresh_token: ['Refresh Token', 14, '']
+    },
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Set Client ID',
+    3355443,
+    52,
+    {
+        client_id: ['Client ID', 14, '']
+    },
+    sendAsExtensionTrigger = false,
+    false
+);
+
+SAMMI.extCommand(
+    'Spotify Get Client ID',
+    3355443,
+    52,
+    {
+        client_id: ['Save in Variable', 14, '']
     },
     sendAsExtensionTrigger = false,
     false
@@ -129,6 +150,7 @@ SAMMI.extCommand(
 
 
 [insert_script]
+
 function trackToSammiTrack(track) {
     return {
         name: track.name,
@@ -156,6 +178,29 @@ async function loadSpotifyToken() {
     return refresh_token.Value;
 }
 
+async function saveSpotifyClientId(client_id) {
+    await SAMMI.saveIni(
+        'spotify.ini',
+        'credentials',
+        'client_id',
+        client_id,
+    );
+}
+
+async function loadSpotifyClientId() {
+    const client_id = await SAMMI.loadIni(
+        'spotify.ini',
+        'credentials',
+        'client_id',
+    );
+
+    if (!client_id || client_id.Value === '') {
+        return;
+    }
+
+    return client_id.Value;
+}
+
 async function saveSpotifyToken(refresh_token) {
     await SAMMI.saveIni(
         'spotify.ini',
@@ -167,7 +212,16 @@ async function saveSpotifyToken(refresh_token) {
 
 async function refreshSpotifyToken(refreshToken) {
     const url = "https://accounts.spotify.com/api/token";
-    const SPOTIFY_CLIENT_ID = 'c47877614f4e4632b293a40fe7a260e2';
+    let spotifyClientId = await loadSpotifyClientId();
+
+    if (!spotifyClientId) {
+        SAMMI.popUp('No Spotify Client ID found - did you run the setup command?');
+        console.error('No Spotify Client ID found');
+
+        // TODO: This will change as we migrate; for now, set the value to our client ID
+        spotifyClientId = 'c47877614f4e4632b293a40fe7a260e2';
+        // return;
+    }
 
     const payload = {
         method: 'POST',
@@ -177,7 +231,7 @@ async function refreshSpotifyToken(refreshToken) {
         body: new URLSearchParams({
             grant_type: 'refresh_token',
             refresh_token: refreshToken,
-            client_id: SPOTIFY_CLIENT_ID,
+            client_id: spotifyClientId,
         }),
     };
 
@@ -301,7 +355,6 @@ async function getCurrentSong(access_token) {
     const body = await response.json();
     return body.item;
 }
-
 
 async function lookupSong(accessToken, query) {
     const headers = {
@@ -629,6 +682,37 @@ async function onSetVolume(accessToken, payload) {
     await setPlayerVolume(accessToken, payload.Data.volume);
 }
 
+async function onSetClientId(_, payload) {
+    await saveSpotifyClientId(
+        payload
+            .Data
+            .client_id
+            .trim()
+    );
+}
+
+async function onGetClientId(_, payload) {
+    const clientId = await loadSpotifyClientId();
+
+    if (!clientId) {
+        await SAMMI.setVariable(
+            payload.Data.client_id,
+            0,
+            payload.Data.FromButton,
+            payload.Data.instanceId
+        );
+
+        return;
+    }
+
+    await SAMMI.setVariable(
+        payload.Data.client_id,
+        clientId,
+        payload.Data.FromButton,
+        payload.Data.instanceId
+    );
+}
+
 async function onEvent(event, payload) {
     const integrationMapping = {
         'Spotify Skip Song': onSkipSong,
@@ -641,6 +725,8 @@ async function onEvent(event, payload) {
         'Spotify Next Song': onNextSong,
         'Spotify Current Song': onCurrentSong,
         'Spotify Set Volume': onSetVolume,
+        'Spotify Set Client ID': onSetClientId,
+        'Spotify Get Client ID': onGetClientId,
     };
 
     const accessTokenPayload = await SAMMI.getVariable('SPOTIFY_ACCESS_TOKEN');
@@ -672,17 +758,36 @@ async function onEvent(event, payload) {
 // Custom JavaScript for the extension
 // Main function to run when SAMMI connects to the Bridge
 async function main() {
-    sammiclient.on('Spotify Skip Song', async (payload) => await onEvent('Spotify Skip Song', payload));
-    sammiclient.on('Spotify Refresh Token', async (payload) => await onEvent('Spotify Refresh Token', payload));
-    sammiclient.on('Spotify Skip Song', async (payload) => await onEvent('Spotify Skip Song', payload));
-    sammiclient.on('Spotify Pause Song', async (payload) => await onEvent('Spotify Pause Song', payload));
-    sammiclient.on('Spotify Resume Song', async (payload) => await onEvent('Spotify Resume Song', payload));
-    sammiclient.on('Spotify Next Song', async (payload) => await onEvent('Spotify Next Song', payload));
-    sammiclient.on('Spotify Current Song', async (payload) => await onEvent('Spotify Current Song', payload));
-    sammiclient.on('Spotify Lookup Song', async (payload) => await onEvent('Spotify Lookup Song', payload));
-    sammiclient.on('Spotify Add Song', async (payload) => await onEvent('Spotify Add Song', payload));
-    sammiclient.on('Spotify Set Refresh Token', async (payload) => await onEvent('Spotify Set Refresh Token', payload));
-    sammiclient.on('Spotify Set Volume', async (payload) => await onEvent('Spotify Set Volume', payload));
+    const commands = [
+        'Spotify Skip Song',
+        'Spotify Refresh Token',
+        'Spotify Pause Song',
+        'Spotify Resume Song',
+        'Spotify Next Song',
+        'Spotify Current Song',
+        'Spotify Lookup Song',
+        'Spotify Add Song',
+        'Spotify Set Refresh Token',
+        'Spotify Set Volume',
+        'Spotify Set Client ID',
+        'Spotify Get Client ID',
+    ];
+
+    // Register the commands
+    for (const command of commands) {
+        sammiclient.on(command, async (payload) => await onEvent(command, payload));
+    }
+
+    // sammiclient.on('Spotify Skip Song', async (payload) => await onEvent('Spotify Skip Song', payload));
+    // sammiclient.on('Spotify Refresh Token', async (payload) => await onEvent('Spotify Refresh Token', payload));
+    // sammiclient.on('Spotify Pause Song', async (payload) => await onEvent('Spotify Pause Song', payload));
+    // sammiclient.on('Spotify Resume Song', async (payload) => await onEvent('Spotify Resume Song', payload));
+    // sammiclient.on('Spotify Next Song', async (payload) => await onEvent('Spotify Next Song', payload));
+    // sammiclient.on('Spotify Current Song', async (payload) => await onEvent('Spotify Current Song', payload));
+    // sammiclient.on('Spotify Lookup Song', async (payload) => await onEvent('Spotify Lookup Song', payload));
+    // sammiclient.on('Spotify Add Song', async (payload) => await onEvent('Spotify Add Song', payload));
+    // sammiclient.on('Spotify Set Refresh Token', async (payload) => await onEvent('Spotify Set Refresh Token', payload));
+    // sammiclient.on('Spotify Set Volume', async (payload) => await onEvent('Spotify Set Volume', payload));
 
     await refreshTokenIntegration();
 
@@ -698,4 +803,4 @@ async function main() {
 // Notice we added this particular key to the very end of the deck json: "sammi_version": "2023.3.0" 
 // This means the extension will only install if SAMMI version is 2023.3.0 or higher
 [insert_over]
-{ "deck_data": "{ \"background_color\": 4210752.0, \"on\": true, \"grid_y\": 10.0, \"snap_grid\": 1.0, \"lb_version\": \"2024.1.0\", \"background_image\": \"\", \"sammi_version\": \"2024.1.0\", \"encrypted\": 0.0, \"adaptive_resizing\": 1.0, \"unique_id\": \"20240317151952373525382\", \"button_list\": [ { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Setup\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Sammi will now open a window to authorize a Spotify application which allows this extension to control Spotify.\", \"v0\": 1.0 }, { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/spotify-token-api-gold.vercel.app\\\/oauth\\\/spotify\\\/extension\\\/redirect\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Input Refresh token from browser.\", \"b2\": \"refresh_token\" }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 3.0, \"vis\": 1.0, \"refresh_token\": \"\\\/$refresh_token$\\\/\", \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Refresh Token\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.59999999999999997779553950749687, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.40000000000000002220446049250313, \"button_id\": \"SPOTIFY_SETUP\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Unknown\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_EXTENSION_STATUS\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 64.0, \"stretch\": 0.0 } ], \"deck_name\": \"Spotify Extension\", \"grid_x\": 10.0, \"stretch\": 0.0 }", "unique_id": "20240317151952373525382", "include_image": { } }
+{ "deck_data": "{ \"background_color\": 4210752.0, \"on\": true, \"grid_y\": 10.0, \"snap_grid\": 1.0, \"lb_version\": \"2024.1.0\", \"background_image\": \"\", \"sammi_version\": \"2024.1.0\", \"encrypted\": 0.0, \"adaptive_resizing\": 1.0, \"unique_id\": \"20240317151952373525382\", \"button_list\": [ { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Setup\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"extcmd\": \"Spotify Get Client ID\", \"client_id\": \"existing_client_id\", \"ext\": \"SAMMI Bridge\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 1.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 1.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": true, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": false, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"existing_client_id\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"0\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 5.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"SAMMI will now open a window to the Spotify Developer Dashboard - this is where you create and retrieve the client id for your Spotify OAuth application.\", \"v0\": 1.0 }, { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 3.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/developer.spotify.com\\\/dashboard\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 4.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"Input Client ID from Spotify Dashboard.\", \"b2\": \"client_id\" }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 5.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Client ID\", \"client_id\": \"\\\/$client_id$\\\/\", \"ext\": \"SAMMI Bridge\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 12.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 6.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": true, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": false, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"client_id\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b1\": \"=\", \"cmd\": 15.0, \"obsid\": \"Main\", \"pos\": 7.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"client_id\", \"b2\": \"existing_client_id\" }, { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 8.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"SAMMI will now open a window to authorize YOUR Spotify application which allows this extension to control Spotify.\", \"v0\": 1.0 }, { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 9.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/spotify-token-api-gold.vercel.app\\\/oauth\\\/spotify\\\/extension\\\/redirect?client_id=\\\/$client_id$\\\/\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 10.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Input Refresh token from browser.\", \"b2\": \"refresh_token\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 12.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 11.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": true, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": false, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"refresh_token\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 12.0, \"vis\": 1.0, \"refresh_token\": \"\\\/$refresh_token$\\\/\", \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Refresh Token\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.29999999999999998889776975374843, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 2.0, \"width\": 0.40000000000000002220446049250313, \"button_id\": \"SPOTIFY_SETUP\", \"button_duration\": 0.0, \"y\": 0.29999999999999998889776975374843, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": true, \"text\": \"Reset Client ID\", \"release_duration\": 0.0, \"queueable\": false, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"This should only be run if you need to change a client id for (whatever) reason. This will almost never be used. \", \"v0\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Client ID\", \"client_id\": \"\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": false, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": false, \"init_variable\": \"\", \"deck\": 2.0, \"width\": 0.20000000000000001110223024625157, \"button_id\": \"SPOTIFY_EXTENSION_RESET_CLIENT_ID\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": false }, { \"color\": 12632256.0, \"persistent\": true, \"text\": \"Documentation\", \"release_duration\": 0.0, \"queueable\": false, \"command_list\": [ { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"\" } ], \"press_type\": 0.0, \"x\": 0.80000000000000004440892098500626, \"is_transparent\": false, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": false, \"init_variable\": \"\", \"deck\": 2.0, \"width\": 0.20000000000000001110223024625157, \"button_id\": \"SPOTIFY_EXTENSION_DOCUMENTS\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": false } ], \"deck_name\": \"Spotify Extension\", \"grid_x\": 10.0, \"stretch\": 0.0 }", "unique_id": "20240317151952373525382", "include_image": { } }
