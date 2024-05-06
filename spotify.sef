@@ -150,19 +150,21 @@ SAMMI.extCommand(
 
 
 [insert_script]
-// const response = await fetch(url, payload);
-
 async function fetchR(url, payload) {
     const response = await fetch(url, payload);
 
     if (response.status === 401) {
         const newAccessToken = await refreshTokenIntegration();
 
+        console.log(`Token expired, refreshing token for ${url}`);
+
         if (!newAccessToken) {
+            console.error(`Failed to refresh token for ${url}`);
             return;
         }
 
-        return await _fetch(url, payload);
+        payload.headers['Authorization'] = `Bearer ${newAccessToken}`;
+        return await fetch(url, payload);
     }
 
     return response;
@@ -547,7 +549,6 @@ async function onAddSong(accessToken, payload) { // todo: this changes
 async function onGetQueue(accessToken, payload) {
     const queue = await getQueue(accessToken);
 
-    console.log(queue);
     if (!queue || queue.length === 0) {
         await SAMMI.setVariable(
             payload.Data.trackInfo, 
@@ -661,8 +662,6 @@ async function onEvent(event, payload) {
     let accessToken = accessTokenPayload.Value;
     
     console.log(`Event: ${event}`)
-    // log whether it's in the exluded list
-    console.log(`Excluded: ${excludeRefreshTokenEvents.includes(event)}`)
     
     /* Refresh the token _only_ if the event is not 'Spotify Set Refresh Token' */
     if (!accessToken && !excludeRefreshTokenEvents.includes(event)) {
