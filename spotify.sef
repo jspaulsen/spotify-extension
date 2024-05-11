@@ -357,7 +357,7 @@ async function lookupSong(accessToken, query) {
         headers: headers,
     };
 
-    const response = await fetch(url, payload);
+    const response = await fetchR(url, payload);
 
     // if the status_code is not 2xx, return null
     if (response.status >= 300) {
