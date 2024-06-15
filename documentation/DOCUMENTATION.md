@@ -22,7 +22,9 @@ Resumes, pauses, or skips the current song.
 
 ### Enqueue Song
 
-Adds a song to the queue.
+Adds a song to the queue. This can be a Spotify URL (https://open.spotify.com/track/5AJ9hqTS2wcFQCELCFRO7A?si=5d68873daf1240c9 for example) or a song name.
+
+NOTE: For request by song name, this feature works best when you specify the artist and potentially the album as well. For example, "The Beatles - Hey Jude".
 
 ### Set Volume
 
