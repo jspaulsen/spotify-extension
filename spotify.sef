@@ -3,7 +3,7 @@ Spotify Extension
 [extension_info]
 Spotify Extension for SAMMI which allows you to control Spotify from SAMMI
 [extension_version]
-2.1.0
+2.2.0
 [insert_external]
 <!-- HTML interface for the extension -->
 <div>
@@ -513,8 +513,8 @@ async function onAddSong(accessToken, payload) { // todo: this changes
         if (url.hostname === 'open.spotify.com') {
             const path = url.pathname.split('/');
 
-            uri = `spotify:track:${path[path.length - 1]}`;
-            track = await getTrackInfo(accessToken, uri);
+            id = path[path.length - 1];
+            track = await getTrackInfo(accessToken, id);
         }
     }
 
@@ -693,11 +693,12 @@ async function onEvent(event, payload) {
 }
 
 
-const CHECK_SONG_FREQ = 1000;
+const CHECK_SONG_FREQ = 2500;
 let CURRENT_SONG = null;
 
+
 async function periodicSongPush() {
-    try {
+    async function _periodicSongPush() {
         const accessToken = await getSpotifyAccessToken();
 
         if (!accessToken) {
@@ -714,11 +715,10 @@ async function periodicSongPush() {
                 trackToSammiTrack(song)
             );  
         }
-    } finally { // always run this function every second
-        setTimeout(periodicSongPush, CHECK_SONG_FREQ);
     }
-}
 
+    setInterval(_periodicSongPush, CHECK_SONG_FREQ);
+}
 
 // Main function to run when SAMMI connects to the Bridge
 async function main() {
