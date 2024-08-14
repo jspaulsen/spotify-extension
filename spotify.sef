@@ -3,7 +3,7 @@ Spotify Extension
 [extension_info]
 Spotify Extension for SAMMI which allows you to control Spotify from SAMMI
 [extension_version]
-2.2.0
+2.3.0
 [insert_external]
 <!-- HTML interface for the extension -->
 <div>
@@ -537,7 +537,7 @@ async function onAddSong(accessToken, payload) { // todo: this changes
     }
 
     const response = await addSong(accessToken, track.uri);
-    const variable = response.status === 204 ? trackToSammiTrack(track) : 0;
+    const variable = (response.status >= 200 && response.status < 300) ? trackToSammiTrack(track) : 0;
 
     await SAMMI.setVariable(
         payload.Data.trackInfo, 
