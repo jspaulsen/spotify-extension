@@ -3,7 +3,7 @@ Spotify Extension
 [extension_info]
 Spotify Extension for SAMMI which allows you to control Spotify from SAMMI
 [extension_version]
-2.2.0
+3.0.0
 [insert_external]
 <!-- HTML interface for the extension -->
 <div>
@@ -15,15 +15,6 @@ Spotify Extension for SAMMI which allows you to control Spotify from SAMMI
 
 
 [insert_command]
-SAMMI.extCommand(
-    'Spotify Refresh Token', 
-    3355443, 
-    52,
-    {},
-    sendAsExtensionTrigger = false,
-    false
-);
-
 SAMMI.extCommand(
     'Spotify Set Refresh Token',
     3355443,
@@ -147,32 +138,12 @@ SAMMI.extCommand(
     await main();
 })();
 
+
 [insert_hook]
 // NOTE: This is required to not make the extension throw an exception
 // about the insert_script; Hook is deprecated, use listeners as recommended
 
 [insert_script]
-async function fetchR(url, payload) {
-    const response = await fetch(url, payload);
-
-    if (response.status === 401) {
-        const newAccessToken = await refreshTokenIntegration();
-
-        console.log(`Token expired, refreshing token for ${url}`);
-
-        if (!newAccessToken) {
-            console.error(`Failed to refresh token for ${url}`);
-            return;
-        }
-
-        payload.headers['Authorization'] = `Bearer ${newAccessToken}`;
-        return await fetch(url, payload);
-    }
-
-    return response;
-}
-
-
 function trackToSammiTrack(track) {
     const images = {
         small: track.album.images[0].url,
@@ -191,296 +162,410 @@ function trackToSammiTrack(track) {
     };
 }
 
-async function loadSpotifyToken() {
-    const refresh_token = await SAMMI.loadIni(
-        'spotify.ini',
-        'credentials',
-        'refresh_token',
-    );
 
-    if (!refresh_token || refresh_token.Value === '') {
-        SAMMI.alert('No refresh token found');
-        console.error('No refresh token found');
-        return;
+class ReadWriteLock {
+    constructor (value) {
+        this.value = value;
+        this.rwLock = null;
+        this.readQueue = [];
     }
 
-    return refresh_token.Value;
-}
+    async get(lock = null) {
+        if (lock) {
+            if (this.rwLock !== lock) {
+                throw new Error("get() called without valid lock");
+            }
 
-async function saveSpotifyClientId(client_id) {
-    await SAMMI.saveIni(
-        'spotify.ini',
-        'credentials',
-        'client_id',
-        client_id,
-    );
-}
+            return this.value;
+        }
 
-async function loadSpotifyClientId() {
-    const client_id = await SAMMI.loadIni(
-        'spotify.ini',
-        'credentials',
-        'client_id',
-    );
+        if (this.rwLock) {
+            await new Promise(resolve => this.readQueue.push(resolve));
+        }
 
-    if (!client_id || client_id.Value === '' || client_id.Value === 'null') {
-        return;
+        return this.value;
     }
 
-    return client_id.Value;
-}
+    lock() {
+        const random = Symbol();
+        
+        if (this.rwLock) {
+            return null;
+        }
 
-async function saveSpotifyToken(refresh_token) {
-    await SAMMI.saveIni(
-        'spotify.ini',
-        'credentials',
-        'refresh_token',
-        refresh_token,
-    );
-}
-
-async function refreshSpotifyToken(refreshToken) {
-    const url = "https://accounts.spotify.com/api/token";
-    let spotifyClientId = await loadSpotifyClientId();
-
-    if (!spotifyClientId) {
-        SAMMI.popUp('No Spotify Client ID found - did you run the setup command?');
-        console.error('No Spotify Client ID found');
-        return;
+        this.rwLock = random;
+        return random;
     }
 
-    const payload = {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: refreshToken,
-            client_id: spotifyClientId,
-        }),
-    };
+    unlock(lock) {
+        if (this.rwLock !== lock) {
+            throw new Error("unlock() called without valid lock");
+        }
 
-    const response = await fetch(url, payload);
-    return await response.json();
-}
+        this.rwLock = null;
 
-async function skipSong(access_token) {
-    const url = "https://api.spotify.com/v1/me/player/next";
-    const headers = {
-        "Authorization": `Bearer ${access_token}`,
-    };
+        // resolve all promises in the read queue
+        // allowing them to continue
+        while (this.readQueue.length) {
+            const resolve = this
+                .readQueue
+                .shift();
 
-    const payload = {
-        method: 'POST',
-        headers: headers,
-    };
-
-    return await fetchR(url, payload);
-}
-
-async function pauseSong(access_token) {
-    const url = "https://api.spotify.com/v1/me/player/pause";
-    const headers = {
-        "Authorization": `Bearer ${access_token}`,
-    };
-
-    const payload = {
-        method: 'PUT',
-        headers: headers,
-    };
-
-    return await fetchR(url, payload);
-}
-
-async function getQueue(access_token) { // returns an array of tracks
-    const url = "https://api.spotify.com/v1/me/player/queue";
-    const headers = {
-        "Authorization": `Bearer ${access_token}`,
-    };
-
-    const payload = {
-        method: 'GET',
-        headers: headers,
-    };
-
-    const response = await fetchR(url, payload);
-
-    // if the status_code is not 2xx, return null
-    if (response.status >= 300) {
-        return null;
+            resolve();
+        }
     }
 
-    const body = await response.json();
-    const queue = body.queue;
+    set(lock, value) {
+        if (this.rwLock !== lock) {
+            throw new Error("set() called without valid lock");
+        }
 
-    if (queue.length === 0) {
-        return null;
+        this.value = value;
+    }
+}
+
+
+class SpotifyTokens {
+    constructor (refreshToken, accessToken) {
+        this.refreshToken = refreshToken;
+        this.accessToken = accessToken;
+    }
+}
+
+
+class SpotifyClient {
+    constructor (clientId = null, refreshToken = null, accessToken = null) {
+        this.clientId = clientId;
+        this.tokens = new ReadWriteLock(
+            new SpotifyTokens(
+                refreshToken,
+                accessToken
+            )
+        );
     }
 
-    return queue;
-}
-
-async function getCurrentSong(access_token) {
-    const url = "https://api.spotify.com/v1/me/player/currently-playing";
-    const headers = {
-        "Authorization": `Bearer ${access_token}`,
-    };
-
-    const payload = {
-        method: 'GET',
-        headers: headers,
-    };
-
-    const response = await fetchR(url, payload);
-
-    // if the status_code is not 2xx, return null
-    if (response.status == 204 || response.status >= 300) {
-        return null;
+    static async saveSpotifyClientIdInternal(clientId) {
+        await SAMMI.saveIni(
+            'spotify.ini',
+            'credentials',
+            'client_id',
+            clientId,
+        );
     }
 
-    const body = await response.json();
-    return body.item;
-}
+    static async loadSpotifyClientId() {
+        const clientId = await SAMMI.loadIni(
+            'spotify.ini',
+            'credentials',
+            'client_id',
+        );
 
-async function lookupSong(accessToken, query) {
-    const headers = {
-        'Authorization': `Bearer ${accessToken}`,
-    };
+        if (!clientId || clientId.Value === '' || clientId.Value === 'null') {
+            return;
+        }
 
-    const query_params = {
-        'q': query,
-        'type': 'track,artist,album',
-    };
-
-    const url = "https://api.spotify.com/v1/search" + '?' + new URLSearchParams(query_params);
-    const payload = {
-        method: 'GET',
-        headers: headers,
-    };
-
-    const response = await fetchR(url, payload);
-
-    // if the status_code is not 2xx, return null
-    if (response.status >= 300) {
-        return null;
+        return clientId.Value;
     }
 
-    const body = await response.json();
-    return body;
-}
-
-async function addSong(accessToken, uri) {
-    const url = "https://api.spotify.com/v1/me/player/queue?uri=" + uri;
-    const headers = {
-        'Authorization': `Bearer ${accessToken}`,
-    };
-
-    const payload = {
-        method: 'POST',
-        headers: headers,
-    };
-
-    return await fetchR(url, payload);
-}
-
-async function resumeSong(accessToken) {
-    const url = "https://api.spotify.com/v1/me/player/play";
-    const headers = {
-        'Authorization': `Bearer ${accessToken}`,
-    };
-
-    const payload = {
-        method: 'PUT',
-        headers: headers,
-    };
-
-    return await fetchR(url, payload);
-}
-
-
-async function getTrackInfo(accessToken, trackId) {
-    const url = `https://api.spotify.com/v1/tracks/${trackId}`;
-    const headers = {
-        'Authorization': `Bearer ${accessToken}`,
-    };
-
-    const payload = {
-        method: 'GET',
-        headers: headers,
-    };
+    static async loadSpotifyRefreshToken() {
+        const refresh_token = await SAMMI.loadIni(
+            'spotify.ini',
+            'credentials',
+            'refresh_token',
+        );
     
-    const response = await fetchR(url, payload);
-    return await response.json();
-}
-
-async function setPlayerVolume(accessToken, volume) {
-    const url = `https://api.spotify.com/v1/me/player/volume?volume_percent=${volume}`;
-    const headers = {
-        'Authorization': `Bearer ${accessToken}`,
-    };
-
-    const payload = {
-        method: 'PUT',
-        headers: headers,
-    };
-
-    return await fetchR(url, payload);
-}
-
-async function refreshTokenIntegration(newlyRefreshedToken = null) {
-    const refreshToken = newlyRefreshedToken || await loadSpotifyToken()
-
-    if (!refreshToken) {
-        SAMMI.popUp(`No refresh token found. Please authenticate with Spotify.`);
-        console.error('No refresh token found');
-        return;
+        if (!refresh_token || refresh_token.Value === '') {
+            SAMMI.alert('No refresh token found');
+            console.error('No refresh token found');
+            return;
+        }
+    
+        return refresh_token.Value;
     }
 
-    const response = await refreshSpotifyToken(refreshToken);
-
-    if (response && response.error) {
-        console.error('Error refreshing token', response.error, response.error_description);
-        SAMMI.popUp(`Error refreshing token: ${response.error} - ${response.error_description}. Please re-authenticate with Spotify.`);
-
-        // unset the refresh token in the file
-        await saveSpotifyToken('');
-        return;
+    static async saveSpotifyRefreshToken(refresh_token) {
+        await SAMMI.saveIni(
+            'spotify.ini',
+            'credentials',
+            'refresh_token',
+            refresh_token,
+        );
     }
 
-    if (!response || !response.access_token) {
-        return;
+    static async apiRefreshSpotifyToken(clientId, refreshToken) {
+        const url = "https://accounts.spotify.com/api/token";
+        const payload = {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: refreshToken,
+                client_id: clientId,
+            }),
+        };
+
+        return await fetch(url, payload);
     }
 
-    await SAMMI.setVariable('SPOTIFY_ACCESS_TOKEN', response.access_token);
-    await saveSpotifyToken(response.refresh_token || refreshToken);
-    return response.access_token;
+    static async refreshSpotifyTokenInternal(clientId, refreshToken) {
+        const result = await SpotifyClient.apiRefreshSpotifyToken(clientId, refreshToken);
+
+        // if the status_code is not 2xx, complain and return
+        if (result.status >= 300) {
+            SAMMI.popUp('Error refreshing Spotify token - reset the client ID and run the setup command again');
+            console.error('Failed to setup new SpotifyClient');
+
+            return null;
+        }
+
+        const body = await result.json();
+
+        if (!body.access_token) {
+            SAMMI.popUp('No access token found in response - reset the client ID and run the setup command again');
+            console.error('No access token found in response');
+
+            return null;
+        }
+
+        refreshToken = body.refresh_token || refreshToken;
+        const accessToken = body.access_token;
+
+        // save the new refresh token
+        await SpotifyClient.saveSpotifyRefreshToken(refreshToken);
+        return { accessToken, refreshToken };
+    }
+
+    /***
+        There's a chicken and egg problem with this client. We need to save the refresh token prior to
+        building the client (as we cannot call async. methods within the constructor). This method will
+        build the client with the saved refresh token.
+    ***/
+    static async build() {
+        const clientId = await this.loadSpotifyClientId();
+        const refreshToken = await this.loadSpotifyRefreshToken();
+
+        if (!clientId || !refreshToken) {
+            SAMMI.popUp('No Spotify Client ID or Refresh Token found - did you run the setup command?');
+            console.error('No Spotify Client ID or Refresh Token found');
+
+            return new SpotifyClient(clientId, refreshToken);
+        }
+
+        const tokens = await SpotifyClient.refreshSpotifyTokenInternal(clientId, refreshToken);
+        return new SpotifyClient(clientId, tokens.refreshToken, tokens.accessToken);
+    }
+
+    hasAccessToken() {
+        return this
+            .tokens
+            .value?.accessToken;
+    }
+    
+    async saveClientId(clientId) {
+        await SpotifyClient.saveSpotifyClientIdInternal(clientId);
+        this.clientId = clientId;
+    }
+
+    async fetch(url, payload, retryOnRefresh = true) {
+        const headers = payload.headers || {};
+
+        /* if the headers don't have an Authorization header, add it */
+        if (!headers['Authorization']) {
+            const tokens = await this.tokens.get();
+            const accessToken = tokens.accessToken;
+
+            if (!accessToken) {
+                SAMMI.popUp('No Spotify Access Token found - did you run the setup command?');
+                console.error('No Spotify Access Token found');
+                return;
+            }
+            
+            payload.headers = payload.headers || {};
+            payload.headers['Authorization'] = `Bearer ${accessToken}`;
+        }
+
+        const response = await fetch(url, payload);
+
+        if (response.status === 401 && retryOnRefresh) {
+            const lock = this.tokens.lock();
+            let tokens = null;
+
+            if (lock) {
+                try {
+                    const existingTokens = await this.tokens.get(lock);
+
+                    tokens = await SpotifyClient.refreshSpotifyTokenInternal(this.clientId, existingTokens.refreshToken);
+                    this.tokens.set(lock, new SpotifyTokens(tokens.refreshToken, tokens.accessToken));
+                } finally {
+                    this.tokens.unlock(lock);
+                }
+            } else {
+                tokens = await this.tokens.get();
+            }
+
+            payload.headers['Authorization'] = `Bearer ${tokens.accessToken}`;
+            return await this.fetch(url, payload, false); // don't retry on refresh, prevent infinite loop
+        }
+
+        return response;
+    }
+
+    async setRefreshToken(refreshToken) {
+        const lock = this.tokens.lock();
+
+        if (!lock) {
+            SAMMI.popUp('Failed to set refresh token - token is being refreshed');
+            console.error('Failed to set refresh token - token is being refreshed');
+            return;
+        }
+
+        try {
+            const { accessToken, newRefreshToken } = await SpotifyClient.refreshSpotifyTokenInternal(this.clientId, refreshToken);
+            this.tokens.set(lock, new SpotifyTokens(newRefreshToken, accessToken));
+        } finally {
+            this.tokens.unlock(lock);
+        }
+    }
+
+    async skipSong() {
+        const url = "https://api.spotify.com/v1/me/player/next";
+        const payload = {method: 'POST'}
+
+        return await this.fetch(url, payload);
+    }
+
+    async pauseSong() {
+        const url = "https://api.spotify.com/v1/me/player/pause";
+        const payload = { method: 'PUT' };
+
+        return await this.fetch(url, payload);
+    }
+
+    async getQueue() { // returns an array of tracks
+        const url = "https://api.spotify.com/v1/me/player/queue";
+        const payload = { method: 'GET' };
+        const response = await this.fetch(url, payload);
+    
+        // if the status_code is not 2xx, return null
+        if (response.status >= 300) {
+            return null;
+        }
+    
+        const body = await response.json();
+        const queue = body.queue;
+    
+        if (queue.length === 0) {
+            return null;
+        }
+    
+        return queue;
+    }
+
+    async getQueue() { // returns an array of tracks
+        const url = "https://api.spotify.com/v1/me/player/queue";
+        const payload = { method: 'GET' };
+        const response = await this.fetch(url, payload);
+    
+        // if the status_code is not 2xx, return null
+        if (response.status >= 300) {
+            return null;
+        }
+    
+        const body = await response.json();
+        const queue = body.queue;
+    
+        if (queue.length === 0) {
+            return null;
+        }
+    
+        return queue;
+    }
+
+    async getCurrentSong() {
+        const url = "https://api.spotify.com/v1/me/player/currently-playing";
+        const payload = { method: 'GET' };
+        const response = await this.fetch(url, payload);
+    
+        // if the status_code is not 2xx, return null
+        if (response.status == 204 || response.status >= 300) {
+            return null;
+        }
+    
+        const body = await response.json();
+        return body.item;
+    }
+
+    async lookupSong(query) {
+        const query_params = {
+            'q': query,
+            'type': 'track,artist,album',
+        };
+    
+        const url = "https://api.spotify.com/v1/search" + '?' + new URLSearchParams(query_params);
+        const payload = { method: 'GET' };
+        const response = await this.fetch(url, payload);
+    
+        // if the status_code is not 2xx, return null
+        if (response.status >= 300) {
+            return null;
+        }
+    
+        const body = await response.json();
+        return body;
+    }
+
+    async addSong(uri) {
+        const url = "https://api.spotify.com/v1/me/player/queue?uri=" + uri;
+        const payload = { method: 'POST' };
+    
+        return await this.fetch(url, payload);
+    }
+
+    async resumeSong() {
+        const url = "https://api.spotify.com/v1/me/player/play";
+        const payload = { method: 'PUT' };
+    
+        return await this.fetch(url, payload);
+    }
+
+    async getTrackInfo(accessToken, trackId) {
+        const url = `https://api.spotify.com/v1/tracks/${trackId}`;
+        const headers = {
+            'Authorization': `Bearer ${accessToken}`,
+        };
+    
+        const payload = {
+            method: 'GET',
+            headers: headers,
+        };
+        
+        const response = await this.fetch(url, payload);
+        return await response.json();
+    }
+
+    async setPlayerVolume(volume) {
+        const url = `https://api.spotify.com/v1/me/player/volume?volume_percent=${volume}`;
+        const payload = { method: 'PUT' };
+    
+        return await this.fetch(url, payload);
+    }
 }
 
-async function onSetRefreshToken(_, payload) {
-    await refreshTokenIntegration(
-        payload
-            .Data
-            .refresh_token
-            .trim()
-    )
+
+async function onSetRefreshToken(client, payload) {
+    const refreshToken = payload
+        .Data
+        .refresh_token
+        .trim();
+
+    await client.setRefreshToken(refreshToken);
 }
 
 // integration methods
-async function onSkipSong(accessToken, payload) {
-    await skipSong(accessToken);
-}
-
-async function onRefreshToken(accessToken, payload) {
-    await refreshTokenIntegration();
-}
-
-async function onPauseSong(accessToken, payload) {
-    await pauseSong(accessToken);
-}
-
-async function onLookupSong(accessToken, payload) {
-    const response = await lookupSong(accessToken, payload.Data.query);
+async function onLookupSong(client, payload) {
+    const response = await client.lookupSong(payload.Data.query);
     const tracks = response.tracks.items;
 
     if (!tracks) {
@@ -502,7 +587,7 @@ async function onLookupSong(accessToken, payload) {
     );
 }
 
-async function onAddSong(accessToken, payload) { // todo: this changes
+async function onAddSong(client, payload) { // todo: this changes
     const query = payload.Data.query;
     let track = null;
 
@@ -514,12 +599,12 @@ async function onAddSong(accessToken, payload) { // todo: this changes
             const path = url.pathname.split('/');
 
             id = path[path.length - 1];
-            track = await getTrackInfo(accessToken, id);
+            track = await client.getTrackInfo(id);
         }
     }
 
     if (!track) {
-        const response = await lookupSong(accessToken, query);
+        const response = await client.lookupSong(query);
         const tracks = response.tracks.items;
 
         if (!tracks) {
@@ -536,8 +621,8 @@ async function onAddSong(accessToken, payload) { // todo: this changes
         track = tracks[0];
     }
 
-    const response = await addSong(accessToken, track.uri);
-    const variable = response.status === 204 ? trackToSammiTrack(track) : 0;
+    const response = await client.addSong(track.uri);
+    const variable = (response.status >= 200 && response.status < 300) ? trackToSammiTrack(track) : 0;
 
     await SAMMI.setVariable(
         payload.Data.trackInfo, 
@@ -547,8 +632,8 @@ async function onAddSong(accessToken, payload) { // todo: this changes
     );
 }
 
-async function onGetQueue(accessToken, payload) {
-    const queue = await getQueue(accessToken);
+async function onGetQueue(client, payload) {
+    const queue = await client.getQueue();
 
     if (!queue || queue.length === 0) {
         await SAMMI.setVariable(
@@ -569,12 +654,8 @@ async function onGetQueue(accessToken, payload) {
     );
 }
 
-async function onResumeSong(accessToken, payload) {
-    await resumeSong(accessToken);
-}
-
-async function onCurrentSong(accessToken, payload) {
-    const track = await getCurrentSong(accessToken);
+async function onCurrentSong(client, payload) {
+    const track = await client.getCurrentSong();
 
     if (!track) {
         await SAMMI.setVariable(
@@ -595,7 +676,7 @@ async function onCurrentSong(accessToken, payload) {
     );
 }
 
-async function onSetVolume(accessToken, payload) {
+async function onSetVolume(client, payload) {
     const volume = payload.Data.volume;
 
     // if it's not an integer, convert it to an integer
@@ -603,11 +684,11 @@ async function onSetVolume(accessToken, payload) {
         payload.Data.volume = parseInt(volume);
     }
 
-    await setPlayerVolume(accessToken, payload.Data.volume);
+    await client.setPlayerVolume(payload.Data.volume);
 }
 
-async function onSetClientId(_, payload) {
-    await saveSpotifyClientId(
+async function onSetClientId(client, payload) {
+    await client.saveClientId(
         payload
             .Data
             .client_id
@@ -615,8 +696,8 @@ async function onSetClientId(_, payload) {
     );
 }
 
-async function onGetClientId(_, payload) {
-    const clientId = await loadSpotifyClientId();
+async function onGetClientId(client, payload) {
+    const clientId = await SpotifyClient.loadSpotifyClientId();
 
     if (!clientId) {
         await SAMMI.setVariable(
@@ -638,74 +719,20 @@ async function onGetClientId(_, payload) {
     );
 }
 
-async function getSpotifyAccessToken() {
-    const accessTokenPayload = await SAMMI.getVariable('SPOTIFY_ACCESS_TOKEN');
 
-    return accessTokenPayload.Value;
-}
-
-async function onEvent(event, payload) {
-    const integrationMapping = {
-        'Spotify Skip Song': onSkipSong,
-        'Spotify Refresh Token': onRefreshToken,
-        'Spotify Set Refresh Token': onSetRefreshToken,
-        'Spotify Pause Song': onPauseSong,
-        'Spotify Resume Song': onResumeSong,
-        'Spotify Lookup Song': onLookupSong,
-        'Spotify Add Song': onAddSong,
-        'Spotify Get Queue': onGetQueue,
-        'Spotify Current Song': onCurrentSong,
-        'Spotify Set Volume': onSetVolume,
-        'Spotify Set Client ID': onSetClientId,
-        'Spotify Get Client ID': onGetClientId,
-    };
-
-    const excludeRefreshTokenEvents = [
-        'Spotify Set Refresh Token',
-        'Spotify Set Client ID',
-        'Spotify Get Client ID'
-    ];
-
-    const accessToken = await getSpotifyAccessToken();
-
-    console.log(`Processing Event: ${event}`)
-
-    /* Refresh the token _only_ if the event is not 'Spotify Set Refresh Token' */
-    if (!accessToken && !excludeRefreshTokenEvents.includes(event)) {
-        const accessToken = await refreshTokenIntegration();
-
-        if (!accessToken) {
-            SAMMI.popUp('No spotify refresh token found; this extension will not work without it. Please re-authenticate with Spotify.');
-            console.error('No refresh token found');
-            return;
-        }
-    }
-
-    const fn = integrationMapping[event];
-
-    if (!fn) {
-        SAMMI.alert(`No integration method found for event: ${event}`);
-        console.error(`No integration method found for event: ${event}`);
-        return;
-    }
-
-    return await fn(accessToken, payload);
-}
-
-
-const CHECK_SONG_FREQ = 2500;
+const CHECK_SONG_FREQ = 3000;
 let CURRENT_SONG = null;
 
 
-async function periodicSongPush() {
+async function periodicSongPush(client) {
     async function _periodicSongPush() {
-        const accessToken = await getSpotifyAccessToken();
+        const hasAccessToken = client.hasAccessToken();
 
-        if (!accessToken) {
+        if (!hasAccessToken) {
             return;
         }
 
-        const song = await getCurrentSong(accessToken);
+        const song = await client.getCurrentSong();
 
         if (song && (CURRENT_SONG === null || CURRENT_SONG.uri !== song.uri)) {
             CURRENT_SONG = song;
@@ -722,30 +749,24 @@ async function periodicSongPush() {
 
 // Main function to run when SAMMI connects to the Bridge
 async function main() {
-    const commands = [
-        'Spotify Skip Song',
-        'Spotify Refresh Token',
-        'Spotify Pause Song',
-        'Spotify Resume Song',
-        'Spotify Get Queue',
-        'Spotify Current Song',
-        'Spotify Lookup Song',
-        'Spotify Add Song',
-        'Spotify Set Refresh Token',
-        'Spotify Set Volume',
-        'Spotify Set Client ID',
-        'Spotify Get Client ID',
-    ];
+    const client = await SpotifyClient.build();
 
-    // Register the commands
-    for (const command of commands) {
-        sammiclient.on(command, async (payload) => await onEvent(command, payload));
-    }
-
-    await refreshTokenIntegration();
+    /* Register the commands */
+    sammiclient.on('Spotify Skip Song', async (payload) => { await client.skipSong()});
+    sammiclient.on('Spotify Pause Song', async (payload) => { await client.pauseSong()});
+    sammiclient.on('Spotify Resume Song', async (payload) => { await client.resumeSong()});
+    sammiclient.on('Spotify Get Queue', async (payload) => { await onGetQueue(client, payload)});
+    sammiclient.on('Spotify Current Song', async (payload) => { await onCurrentSong(client, payload)});
+    sammiclient.on('Spotify Lookup Song', async (payload) => { await onLookupSong(client, payload)});
+    sammiclient.on('Spotify Add Song', async (payload) => { await onAddSong(client, payload)});
+    sammiclient.on('Spotify Set Refresh Token', async (payload) => { await onSetRefreshToken(client, payload)});
+    sammiclient.on('Spotify Set Volume', async (payload) => { await onSetVolume(client, payload)});
+    sammiclient.on('Spotify Set Client ID', async (payload) => { await onSetClientId(client, payload)});
+    sammiclient.on('Spotify Get Client ID', async (payload) => { await onGetClientId(client, payload)});
 
     // setup the periodic song push
-    await periodicSongPush();
+    // TODO: This is currently disabled as it's not working well
+    // await periodicSongPush(client);
 
     // Set a loaded flag to true
     console.log(`Spotify Extension Loaded`)
@@ -758,4 +779,4 @@ async function main() {
 // Notice we added this particular key to the very end of the deck json: "sammi_version": "2023.3.0" 
 // This means the extension will only install if SAMMI version is 2023.3.0 or higher
 [insert_over]
-{ "deck_data": "{ \"background_color\": 4210752.0, \"on\": true, \"grid_y\": 10.0, \"snap_grid\": 1.0, \"lb_version\": \"2024.1.0\", \"background_image\": \"\", \"sammi_version\": \"2024.1.0\", \"encrypted\": false, \"adaptive_resizing\": 1.0, \"unique_id\": \"20240326163401720022037\", \"button_list\": [ { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Resume Song\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Resume Song\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.10000000000000000555111512312578, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ { \"requireinput\": 0.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"message\": \"*\", \"group_id\": \"\", \"redeemname\": \"Resume Song\", \"button_id\": \"SPOTIFY_RESUME_SONG\", \"trg\": 3.0, \"allow_empty_wildcard\": 0.0 } ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_RESUME_SONG\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 81.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 0.0, \"text\": \"Get Current Song\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"Wait Until Variable Exists is only required if the button is not persistent.\", \"v0\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Current Song\", \"trackInfo\": \"contents\", \"ext\": \"SAMMI Bridge\" }, { \"b1\": \"3000\", \"cmd\": 153.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"contents\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"!=\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 3.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"contents\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"0\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 1.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b1\": \"\", \"cmd\": 148.0, \"obsid\": \"Main\", \"pos\": 4.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"\\\/$contents.name$\\\/ by \\\/$contents.artist$\\\/ on \\\/$contents.album$\\\/\" } ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ { \"sub\": 0.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"founder\": 0.0, \"message\": \"!song\", \"moderator\": 0.0, \"group_id\": \"\", \"vip\": 0.0, \"button_id\": \"SPOTIFY_GET_CURRENT_SONG\", \"broadcaster\": 0.0, \"trg\": 0.0, \"allow_empty_wildcard\": 0.0 } ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_GET_CURRENT_SONG\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 17.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 0.0, \"text\": \"Get Next Song\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"Wait Until Variable Exists is only required if the button is not persistent.\", \"v0\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Get Queue\", \"trackInfo\": \"contents\", \"ext\": \"SAMMI Bridge\" }, { \"b1\": \"3000\", \"cmd\": 153.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"contents\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"!=\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 3.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"contents\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"0\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 1.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b1\": \"\", \"cmd\": 148.0, \"obsid\": \"Main\", \"pos\": 4.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"\\\/$contents[0].name$\\\/ by \\\/$contents[0].artist$\\\/ on \\\/$contents[0].album$\\\/\" } ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ { \"sub\": 0.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"founder\": 0.0, \"message\": \"!next\", \"moderator\": 0.0, \"group_id\": \"\", \"vip\": 0.0, \"button_id\": \"ID9\", \"broadcaster\": 0.0, \"trg\": 0.0, \"allow_empty_wildcard\": 0.0 } ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"ID9\", \"button_duration\": 0.0, \"y\": 0.10000000000000000555111512312578, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 17.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Pause Song\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"!=\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 0.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"global.Main.current_scene\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"Starting Soon\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 1.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Pause Song\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.10000000000000000555111512312578, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ { \"requireinput\": 0.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"message\": \"*\", \"group_id\": \"\", \"redeemname\": \"Pause Song\", \"button_id\": \"SPOTIFY_PAUSE_SONG\", \"trg\": 3.0, \"allow_empty_wildcard\": 0.0 } ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_PAUSE_SONG\", \"button_duration\": 0.0, \"y\": 0.10000000000000000555111512312578, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 81.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 0.0, \"text\": \"Skip Song\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"!=\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 0.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"global.Main.current_scene\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"Starting Soon\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 1.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Skip Song\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.10000000000000000555111512312578, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ { \"requireinput\": 0.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"message\": \"*\", \"group_id\": \"\", \"redeemname\": \"Skip Song\", \"button_id\": \"SPOTIFY_SKIP_SONG\", \"trg\": 3.0, \"allow_empty_wildcard\": 0.0 }, { \"sub\": 0.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"founder\": 0.0, \"message\": \"!skip\", \"moderator\": 1.0, \"group_id\": \"\", \"vip\": 0.0, \"button_id\": \"SPOTIFY_SKIP_SONG\", \"broadcaster\": 0.0, \"trg\": 0.0, \"allow_empty_wildcard\": 0.0 } ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_SKIP_SONG\", \"button_duration\": 0.0, \"y\": 0.20000000000000001110223024625157, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 17.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 0.0, \"text\": \"Lookup Song\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"Wait Until Variable Exists is only required if the button is not persistent.\", \"v0\": 0.0 }, { \"b1\": \"0\", \"cmd\": 147.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"query\" }, { \"query\": \"\\\/$query$\\\/\", \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Lookup Song\", \"trackInfo\": \"contents\", \"ext\": \"SAMMI Bridge\" }, { \"b1\": \"3000\", \"cmd\": 153.0, \"obsid\": \"Main\", \"pos\": 3.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"contents\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"!=\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 4.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"contents\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"0\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 1.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b1\": \"\", \"cmd\": 148.0, \"obsid\": \"Main\", \"pos\": 5.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"\\\/$contents.name$\\\/ by \\\/$contents.artist$\\\/ on \\\/$contents.album$\\\/\" } ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ { \"sub\": 0.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"founder\": 0.0, \"message\": \"!lookup *\", \"moderator\": 0.0, \"group_id\": \"\", \"vip\": 0.0, \"button_id\": \"SPOTIFY_LOOKUP_SONG\", \"broadcaster\": 0.0, \"trg\": 0.0, \"allow_empty_wildcard\": 0.0 } ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_LOOKUP_SONG\", \"button_duration\": 0.0, \"y\": 0.20000000000000001110223024625157, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 17.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 0.0, \"text\": \"Enqueue Song\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"Wait Until Variable Exists is only required if the button is not persistent.\", \"v0\": 0.0 }, { \"b1\": \"0\", \"cmd\": 147.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"query\" }, { \"query\": \"\\\/$query$\\\/\", \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Add Song\", \"trackInfo\": \"contents\", \"ext\": \"SAMMI Bridge\" }, { \"b1\": \"5000\", \"cmd\": 153.0, \"obsid\": \"Main\", \"pos\": 3.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"contents\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"!=\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 4.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": false, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"contents\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"0\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 1.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b1\": \"\", \"cmd\": 148.0, \"obsid\": \"Main\", \"pos\": 5.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Added \\\/$contents.name$\\\/ by \\\/$contents.artist$\\\/ on \\\/$contents.album$\\\/ to the queue.\" } ], \"press_type\": 0.0, \"x\": 0.10000000000000000555111512312578, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ { \"sub\": 0.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"founder\": 0.0, \"message\": \"!sr *\", \"moderator\": 1.0, \"group_id\": \"\", \"vip\": 0.0, \"button_id\": \"SPOTIFY_ENQUEUE_SONG\", \"broadcaster\": 0.0, \"trg\": 0.0, \"allow_empty_wildcard\": 0.0 }, { \"requireinput\": 1.0, \"user_name\": \"\", \"case_sensitive\": 0.0, \"message\": \"*\", \"group_id\": \"\", \"redeemname\": \"Add a Song to Queue\", \"button_id\": \"SPOTIFY_ENQUEUE_SONG\", \"trg\": 3.0, \"allow_empty_wildcard\": 0.0 } ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_ENQUEUE_SONG\", \"button_duration\": 0.0, \"y\": 0.29999999999999998889776975374843, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 17.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Set Volume\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"volume\": \"0\", \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Volume\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.10000000000000000555111512312578, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_SET_VOLUME\", \"button_duration\": 0.0, \"y\": 0.40000000000000002220446049250313, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Refresh Token\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"You should never need to manually refresh the token like this; just exists as an example.\", \"v0\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": false, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Refresh Token\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_REFRESH_TOKEN\", \"button_duration\": 0.0, \"y\": 0.29999999999999998889776975374843, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": true, \"text\": \"New Song Trigger\", \"release_duration\": 0.0, \"queueable\": false, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 1.0, \"b0\": \"This is an example of pulling data from the \\\"Spotify Song\\\" trigger event. See Variables.\", \"v0\": 0.0 }, { \"b1\": \"all\", \"cmd\": 66.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": true, \"ms\": 0.0, \"sel\": false, \"dis\": false, \"xpan\": 0.0, \"b0\": \"data\" } ], \"press_type\": 0.0, \"x\": 0.90000000000000002220446049250313, \"is_transparent\": false, \"border\": 2.0, \"image\": \"\", \"triggers\": [ { \"case_sensitive\": false, \"message\": \"Spotify Song\", \"group_id\": \"\", \"button_id\": \"SPOTIFY_SONG_TRIGGER\", \"trg\": 12.0, \"allow_empty_wildcard\": false } ], \"group_id\": \"\", \"overlappable\": false, \"init_variable\": \"\", \"deck\": 3.0, \"width\": 0.10000000000000000555111512312578, \"button_id\": \"SPOTIFY_SONG_TRIGGER\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.10000000000000000555111512312578, \"release_list\": [ ], \"functions\": 81.0, \"stretch\": false } ], \"deck_name\": \"Spotify\", \"grid_x\": 10.0, \"stretch\": 0.0 }", "unique_id": "20240326163401720022037", "include_image": { } }
+{ "deck_data": "{ \"background_color\": 4210752.0, \"on\": true, \"grid_y\": 10.0, \"snap_grid\": 1.0, \"lb_version\": \"2024.1.0\", \"background_image\": \"\", \"sammi_version\": \"2024.1.0\", \"encrypted\": false, \"adaptive_resizing\": 1.0, \"unique_id\": \"20240317151952373525382\", \"button_list\": [ { \"color\": 12632256.0, \"persistent\": 0.0, \"text\": \"Setup\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Get Client ID\", \"client_id\": \"existing_client_id\", \"ext\": \"SAMMI Bridge\" }, { \"b1\": \"1500\", \"cmd\": 153.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"existing_client_id\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 1.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 2.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": 0.0, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"existing_client_id\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"null\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 5.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 3.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"SAMMI will now open a window to the Spotify Developer Dashboard - this is where you create and retrieve the client id for your Spotify OAuth application.\", \"v0\": 1.0 }, { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 4.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/developer.spotify.com\\\/dashboard\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 5.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Input Client ID from Spotify Dashboard.\", \"b2\": \"client_id\" }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 6.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Client ID\", \"client_id\": \"\\\/$client_id$\\\/\", \"ext\": \"SAMMI Bridge\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 12.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 7.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": 0.0, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"client_id\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b1\": \"=\", \"cmd\": 15.0, \"obsid\": \"Main\", \"pos\": 8.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"client_id\", \"b2\": \"existing_client_id\" }, { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 9.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"SAMMI will now open a window to authorize YOUR Spotify application which allows this extension to control Spotify.\", \"v0\": 1.0 }, { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 10.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/spotify-token-api-gold.vercel.app\\\/oauth\\\/spotify\\\/extension\\\/redirect?client_id=\\\/$client_id$\\\/\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 11.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Input Refresh token from browser.\", \"b2\": \"refresh_token\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 12.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 12.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": 0.0, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"refresh_token\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\\\"\\\"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 13.0, \"vis\": 1.0, \"refresh_token\": \"\\\/$refresh_token$\\\/\", \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Refresh Token\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.29999999999999998889776975374843, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 2.0, \"width\": 0.40000000000000002220446049250313, \"button_id\": \"SPOTIFY_SETUP\", \"button_duration\": 0.0, \"y\": 0.29999999999999998889776975374843, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 1.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Reset Client ID\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"This should only be run if you need to change a client id for (whatever) reason. This will almost never be used. \", \"v0\": 0.0 }, { \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"Spotify Set Client ID\", \"client_id\": \"null\", \"ext\": \"SAMMI Bridge\" } ], \"press_type\": 0.0, \"x\": 0.0, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 2.0, \"width\": 0.20000000000000001110223024625157, \"button_id\": \"SPOTIFY_EXTENSION_RESET_CLIENT_ID\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 }, { \"color\": 12632256.0, \"persistent\": 1.0, \"text\": \"Documentation\", \"release_duration\": 0.0, \"queueable\": 0.0, \"command_list\": [ { \"cmd\": 136.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"https:\\\/\\\/github.com\\\/jspaulsen\\\/spotify-extension\" } ], \"press_type\": 0.0, \"x\": 0.80000000000000004440892098500626, \"is_transparent\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": 0.0, \"init_variable\": \"\", \"deck\": 2.0, \"width\": 0.20000000000000001110223024625157, \"button_id\": \"SPOTIFY_EXTENSION_DOCUMENTS\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 0.20000000000000001110223024625157, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 } ], \"deck_name\": \"Spotify Extension\", \"grid_x\": 10.0, \"stretch\": 0.0 }", "unique_id": "20240317151952373525382", "include_image": { } }
