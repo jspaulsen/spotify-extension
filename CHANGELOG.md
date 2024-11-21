@@ -7,3 +7,6 @@
 # Removed Refresh Token command
 # Introduced ReadWriteLock to prevent race conditions when refreshing tokens
 # Disabled Song Change polling (for now)
+
+# 3.0.1
+# Fixed issue with URL song requests

@@ -3,11 +3,12 @@ Spotify Extension
 [extension_info]
 Spotify Extension for SAMMI which allows you to control Spotify from SAMMI
 [extension_version]
-3.0.0
+3.0.1
 [insert_external]
 <!-- HTML interface for the extension -->
 <div>
     <h1>Spotify Extension</h1>
+    <p>Version: 3.0.1</p>
     <p>Authored by: <a href="https://www.github.com/jspaulsen">jspaulsen</a></p>
     <p>Source Code: <a href="https://github.com/jspaulsen/spotify-extension">GitHub</a></p>
     <p>Control Spotify from SAMMI</p>
@@ -530,16 +531,9 @@ class SpotifyClient {
         return await this.fetch(url, payload);
     }
 
-    async getTrackInfo(accessToken, trackId) {
+    async getTrackInfo(trackId) {
         const url = `https://api.spotify.com/v1/tracks/${trackId}`;
-        const headers = {
-            'Authorization': `Bearer ${accessToken}`,
-        };
-    
-        const payload = {
-            method: 'GET',
-            headers: headers,
-        };
+        const payload = { method: 'GET' };
         
         const response = await this.fetch(url, payload);
         return await response.json();
